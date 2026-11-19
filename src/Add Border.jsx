@@ -4,14 +4,22 @@
  *
  * Adds a solid black or white border AROUND the active photo:
  *   1. One dialog asks for units, final photo size (W x H), border width, border color.
- *   2. Reads the photo's current pixel size and resolution.
+ *   2. Reads the photo's current pixel size.
  *   3. Computes pixels-per-unit for width and height. If they disagree by more than
  *      MAX_RELATIVE_ERROR, asks whether to use width, height, or quit.
  *   4. Converts the border width to pixels.
- *   5. Expands the canvas by the border on every side (photo pixels untouched).
- *   6. Adds a new top layer "Border" and fills only the new outer ring.
+ *   5. Expands the canvas by the border on every side as blank, transparent canvas
+ *      (no fill, Content-Aware or Generative Expand; photo pixels untouched).
+ *   6. Saves the original photo area as a selection named "No Border Crop", so the
+ *      original crop can be restored later (Select > Load Selection, then Image > Crop).
+ *   7. Adds a new top layer "Border" and fills only the new outer ring.
  *
- * The photo itself, the document resolution and all other layers are left unchanged.
+ * No message is shown when it finishes; dialogs appear only for the width/height
+ * question and for errors.
+ *
+ * The photo's pixels, the document resolution and all other layers are left unchanged.
+ * A locked Background layer is turned into a normal layer (same pixels, same name),
+ * because a Background layer can't have transparent canvas around it.
  * All changes are one history step, so a single Undo removes them.
  */
 
@@ -21,6 +29,9 @@ var MAX_RELATIVE_ERROR = 0.002;
 
 // Name given to the new layer.
 var BORDER_LAYER_NAME = "Border";
+
+// Name of the saved selection (alpha channel) that marks the original photo area.
+var CROP_SELECTION_NAME = "No Border Crop";
 
 // Used to pass values into suspendHistory (which evaluates in global scope).
 var gBorderJob = null;
@@ -58,7 +69,6 @@ function run(doc) {
     // ---- 2. Read the current photo -----------------------------------------
     var wPx = Math.round(doc.width.as("px"));
     var hPx = Math.round(doc.height.as("px"));
-    var fileResolution = doc.resolution; // pixels per inch, reported only
 
     // ---- 3. Conversion rates (pixels per chosen unit) ----------------------
     var rateW = wPx / s.width;
@@ -93,34 +103,6 @@ function run(doc) {
         color: s.color
     };
     doc.suspendHistory("Add Border", "applyBorder()");
-
-    // ---- Report -------------------------------------------------------------
-    var actualW = wPx / rate;
-    var actualH = hPx / rate;
-    var diffW = actualW - s.width;
-    var diffH = actualH - s.height;
-    var u = s.unitShort;
-
-    var basisText = (basis === "both")
-        ? "Width and height agree (difference " + pct(relErr) + ")"
-        : "Using " + basis + " as the determining size (mismatch " + pct(relErr) + ")";
-
-    var msg =
-        "Border added.\n\n" +
-        basisText + "\n\n" +
-        "Photo: " + wPx + " x " + hPx + " px\n" +
-        "File resolution (unchanged): " + fmt(fileResolution, 2) + " ppi\n" +
-        "Conversion rate used: " + fmt(rate, 3) + " px/" + u + rateInPpi(rate, s) + "\n\n" +
-        "Border: " + fmt(s.border, 3) + " " + u + " = " + borderPx + " px, " + s.colorName + "\n" +
-        "New canvas: " + (wPx + 2 * borderPx) + " x " + (hPx + 2 * borderPx) + " px\n\n" +
-        "Photo size at this rate:\n" +
-        "  Width:  " + fmt(actualW, 3) + " " + u + "  (intended " + fmt(s.width, 3) +
-        ", difference " + signed(diffW, 3) + " " + u + ")\n" +
-        "  Height: " + fmt(actualH, 3) + " " + u + "  (intended " + fmt(s.height, 3) +
-        ", difference " + signed(diffH, 3) + " " + u + ")\n" +
-        "Overall size with border: " + fmt(actualW + 2 * s.border, 3) + " x " +
-        fmt(actualH + 2 * s.border, 3) + " " + u;
-    alert(msg);
 }
 
 // Runs inside one history state.
@@ -131,8 +113,21 @@ function applyBorder() {
     var newW = j.wPx + 2 * b;
     var newH = j.hPx + 2 * b;
 
-    // Grow the canvas equally on all sides; existing pixels are not touched.
+    // A locked Background layer can't hold transparency, so Photoshop would fill
+    // the added canvas on it with a color. Turn it into a normal layer first
+    // (same pixels, same name) so the added canvas is blank and transparent.
+    unlockBackgroundLayer(doc);
+
+    // Grow the canvas equally on all sides. This is a plain Canvas Size: the new
+    // area is left empty (transparent) - no fill, Content-Aware or Generative
+    // Expand. Existing pixels are not touched.
     doc.resizeCanvas(UnitValue(newW, "px"), UnitValue(newH, "px"), AnchorPosition.MIDDLECENTER);
+
+    // Save the original photo area as a named selection so the original crop
+    // can be restored later: Select > Load Selection, then Image > Crop.
+    var inner = [[b, b], [b + j.wPx, b], [b + j.wPx, b + j.hPx], [b, b + j.hPx]];
+    doc.selection.select(inner, SelectionType.REPLACE, 0, false);
+    saveSelectionAsChannel(CROP_SELECTION_NAME);
 
     // New empty layer, placed at the very top of the layer stack.
     doc.activeLayer = doc.layers[0];
@@ -151,11 +146,32 @@ function applyBorder() {
 
     // Select the outer ring only (whole canvas minus the original photo area).
     var outer = [[0, 0], [newW, 0], [newW, newH], [0, newH]];
-    var inner = [[b, b], [b + j.wPx, b], [b + j.wPx, b + j.hPx], [b, b + j.hPx]];
     doc.selection.select(outer, SelectionType.REPLACE, 0, false);
     doc.selection.select(inner, SelectionType.DIMINISH, 0, false);
     doc.selection.fill(j.color, ColorBlendMode.NORMAL, 100, false);
     doc.selection.deselect();
+}
+
+// If the bottom layer is a Background layer, make it a normal layer with the
+// same name so canvas added around it stays transparent.
+function unlockBackgroundLayer(doc) {
+    var bottom = doc.layers[doc.layers.length - 1];
+    if (bottom.typename === "ArtLayer" && bottom.isBackgroundLayer) {
+        var name = bottom.name;
+        bottom.isBackgroundLayer = false;
+        bottom.name = name;
+    }
+}
+
+// Same as Select > Save Selection > New Channel with the given name.
+// Doesn't change which channels are visible or active.
+function saveSelectionAsChannel(name) {
+    var desc = new ActionDescriptor();
+    var ref = new ActionReference();
+    ref.putProperty(charIDToTypeID("Chnl"), charIDToTypeID("fsel"));
+    desc.putReference(charIDToTypeID("null"), ref);
+    desc.putString(charIDToTypeID("Nm  "), name);
+    executeAction(charIDToTypeID("Dplc"), desc, DialogModes.NO);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +212,7 @@ function showSettingsDialog() {
     gC.add("statictext", undefined, "Color:");
     var rbBlack = gC.add("radiobutton", undefined, "Black");
     var rbWhite = gC.add("radiobutton", undefined, "White");
-    rbWhite.value = true;
+    rbBlack.value = true;
 
     ddUnits.onChange = function () {
         unitLabel.text = (ddUnits.selection.index === 0) ? "in" : "cm";
@@ -300,8 +316,5 @@ function signed(n, d) {
 
 function pct(x) { return (x * 100).toFixed(3) + "%"; }
 
-function rateInPpi(rate, s) {
-    return s.inches ? "" : " (" + fmt(rate * 2.54, 2) + " ppi)";
-}
 
 main();
