@@ -1,0 +1,15 @@
+# Border width presets for Add Border.jsx
+#
+# Keep this file in the same folder as Add Border.jsx.
+# One preset per line:   Name = width
+#   - The width is the border on EACH side, in CENTIMETERS (use a period or a comma for decimals).
+#   - The dialog converts it to inches when the units are set to inches.
+# Lines starting with # and blank lines are ignored. Presets appear in the order listed.
+#
+# The WhiteWall values are how far the image wraps around each side of their canvas
+# stretcher frames (frame depth + about 1 cm that folds onto the back), based on
+# WhiteWall's published wrap amounts. Confirm with WhiteWall before relying on them.
+
+WhiteWall Canvas, 2 cm (0.79 in) frame = 2.9
+WhiteWall Canvas, 4 cm (1.57 in) frame = 5.5
+WhiteWall Canvas, 6 cm (2.36 in) frame = 8.5

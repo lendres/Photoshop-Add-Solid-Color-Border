@@ -3,7 +3,8 @@
  * Add Border.jsx
  *
  * Adds a solid black or white border AROUND the active photo:
- *   1. One dialog asks for units, final photo size (W x H), border width, and border
+ *   1. One dialog asks for units, final photo size (W x H), border width (typed in or
+ *      chosen from presets in "Add Border Presets.txt"), and border
  *      color (black, white or a custom color).
  *   2. Reads the photo's current pixel size.
  *   3. Computes pixels-per-unit for width and height. If they disagree by more than
@@ -33,6 +34,10 @@ var BORDER_LAYER_NAME = "Border";
 
 // Name of the saved selection (alpha channel) that marks the original photo area.
 var CROP_SELECTION_NAME = "No Border Crop";
+
+// Border width presets are read from this file, in the same folder as this script.
+// Each line is "Name = width in centimeters"; lines starting with # are comments.
+var PRESETS_FILE_NAME = "Add Border Presets.txt";
 
 // Used to pass values into suspendHistory (which evaluates in global scope).
 var gBorderJob = null;
@@ -180,6 +185,14 @@ function saveSelectionAsChannel(name) {
 // ---------------------------------------------------------------------------
 
 function showSettingsDialog() {
+    var presetInfo = loadBorderPresets();
+    var presets = presetInfo.presets;
+    if (presetInfo.errors.length) {
+        alert("Some lines in the presets file couldn't be read and were skipped:\n\n" +
+              presetInfo.errors.join("\n") + "\n\nFile: " + presetInfo.path +
+              "\n\nEach line should look like:  Name = 5  (width in centimeters)");
+    }
+
     var d = new Window("dialog", "Add Border");
     d.orientation = "column";
     d.alignChildren = "fill";
@@ -203,11 +216,52 @@ function showSettingsDialog() {
     var pBorder = d.add("panel", undefined, "Border");
     pBorder.alignChildren = "left";
 
+    // Border width: either typed in (Custom) or chosen from the presets file.
+    // The two radio buttons are in different rows, so they're kept exclusive by hand.
     var gB = pBorder.add("group");
     gB.add("statictext", undefined, "Border width:");
+    var rbWidthCustom = gB.add("radiobutton", undefined, "Custom:");
     var etB = gB.add("edittext", undefined, "");
     etB.characters = 7;
     var unitLabel = gB.add("statictext", undefined, "in    ");
+
+    var gP = pBorder.add("group");
+    gP.margins = [82, 0, 0, 0];
+    var rbWidthPreset = gP.add("radiobutton", undefined, "Preset:");
+    var ddPreset = gP.add("dropdownlist", undefined, []);
+    ddPreset.preferredSize.width = 280;
+
+    function fillPresetList() {
+        var keep = ddPreset.selection ? ddPreset.selection.index : 0;
+        var inches = ddUnits.selection.index === 0;
+        ddPreset.removeAll();
+        if (!presets.length) {
+            ddPreset.add("item", presetInfo.found ? "No presets in file" : "Presets file not found");
+            ddPreset.selection = 0;
+            return;
+        }
+        for (var i = 0; i < presets.length; i++) {
+            var v = inches ? presets[i].cm / 2.54 : presets[i].cm;
+            ddPreset.add("item", presets[i].name + "  (" + shortNum(v, inches ? 3 : 2) +
+                         (inches ? " in)" : " cm)"));
+        }
+        ddPreset.selection = Math.min(keep, presets.length - 1);
+    }
+
+    function updateWidthEnabled() {
+        etB.enabled = rbWidthCustom.value;
+        ddPreset.enabled = rbWidthPreset.value;
+    }
+    rbWidthCustom.onClick = function () { rbWidthPreset.value = false; updateWidthEnabled(); };
+    rbWidthPreset.onClick = function () { rbWidthCustom.value = false; updateWidthEnabled(); };
+
+    rbWidthCustom.value = true;
+    if (!presets.length) {
+        rbWidthPreset.enabled = false;
+        rbWidthPreset.helpTip = "Add presets to " + presetInfo.path;
+    }
+    fillPresetList();
+    updateWidthEnabled();
 
     var gC = pBorder.add("group");
     gC.add("statictext", undefined, "Color:");
@@ -217,7 +271,8 @@ function showSettingsDialog() {
     rbBlack.value = true;
 
     // Custom color: a hex field, a swatch, and a button that opens Photoshop's
-    // Color Picker. It starts out as the current foreground color.
+    // Color Picker. It starts out as the current foreground color. These
+    // controls are only enabled while the Custom radio button is selected.
     var gCustom = pBorder.add("group");
     gCustom.margins = [52, 0, 0, 0];
     var swatch = gCustom.add("group");
@@ -226,20 +281,36 @@ function showSettingsDialog() {
     etHex.characters = 8;
     var btnPick = gCustom.add("button", undefined, "Choose...");
 
+    var lastSwatchRgb = null;
     function updateSwatch() {
-        var rgb = hexToRgb(etHex.text);
+        var rgb = hexToRgb(etHex.text) || lastSwatchRgb;
         if (!rgb) return;
+        lastSwatchRgb = rgb;
+        var r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+        if (!rbCustom.value) {
+            // Show the swatch faded toward the dialog gray while disabled.
+            r = (r + 0.5) / 2; g = (g + 0.5) / 2; b = (b + 0.5) / 2;
+        }
         try {
             swatch.graphics.backgroundColor = swatch.graphics.newBrush(
-                swatch.graphics.BrushType.SOLID_COLOR,
-                [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1]);
+                swatch.graphics.BrushType.SOLID_COLOR, [r, g, b, 1]);
         } catch (e) { /* swatch is cosmetic only */ }
     }
-    updateSwatch();
 
-    etHex.onChanging = function () { rbCustom.value = true; updateSwatch(); };
+    function updateCustomEnabled() {
+        var on = rbCustom.value;
+        swatch.enabled = on;
+        etHex.enabled = on;
+        btnPick.enabled = on;
+        updateSwatch();
+    }
+    rbBlack.onClick = updateCustomEnabled;
+    rbWhite.onClick = updateCustomEnabled;
+    rbCustom.onClick = updateCustomEnabled;
+    updateCustomEnabled();
+
+    etHex.onChanging = function () { updateSwatch(); };
     btnPick.onClick = function () {
-        rbCustom.value = true;
         var picked = pickColor(hexToRgb(etHex.text));
         if (picked) {
             etHex.text = colorToHex(picked);
@@ -249,6 +320,7 @@ function showSettingsDialog() {
 
     ddUnits.onChange = function () {
         unitLabel.text = (ddUnits.selection.index === 0) ? "in" : "cm";
+        fillPresetList();
     };
 
     var gBtn = d.add("group");
@@ -260,7 +332,14 @@ function showSettingsDialog() {
     btnOK.onClick = function () {
         var w = parseNum(etW.text);
         var h = parseNum(etH.text);
-        var b = parseNum(etB.text);
+        var b;
+        if (rbWidthPreset.value) {
+            // Presets are stored in centimeters; convert when working in inches.
+            var cm = presets[ddPreset.selection.index].cm;
+            b = (ddUnits.selection.index === 0) ? cm / 2.54 : cm;
+        } else {
+            b = parseNum(etB.text);
+        }
         if (!(w > 0) || !(h > 0)) {
             alert("Enter a width and height greater than zero.");
             return;
@@ -397,6 +476,48 @@ function colorToHexFromRgb(rgb) {
     }
     return out;
 }
+
+// Reads border width presets from PRESETS_FILE_NAME next to this script.
+// Returns { presets: [{name, cm}], found, path, errors: [text] }.
+function loadBorderPresets() {
+    var info = { presets: [], found: false, path: PRESETS_FILE_NAME, errors: [] };
+    var f;
+    try {
+        f = new File(File($.fileName).parent.fsName + "/" + PRESETS_FILE_NAME);
+    } catch (e) {
+        return info;
+    }
+    info.path = f.fsName;
+    if (!f.exists) return info;
+    info.found = true;
+
+    f.encoding = "UTF-8";
+    if (!f.open("r")) {
+        info.errors.push("The file couldn't be opened.");
+        return info;
+    }
+    var lineNo = 0;
+    while (!f.eof) {
+        var raw = f.readln();
+        lineNo++;
+        var line = raw.replace(/^\uFEFF/, "").replace(/^\s+|\s+$/g, "");
+        if (line === "" || line.charAt(0) === "#") continue;
+
+        var eq = line.lastIndexOf("=");
+        var name = eq > 0 ? line.substr(0, eq).replace(/\s+$/, "") : "";
+        var cm = eq > 0 ? parseNum(line.substr(eq + 1)) : NaN;
+        if (!name || !(cm > 0)) {
+            info.errors.push("Line " + lineNo + ": " + line);
+            continue;
+        }
+        info.presets.push({ name: name, cm: cm });
+    }
+    f.close();
+    return info;
+}
+
+// Number with up to d decimals and no trailing zeros, e.g. 1.969, 5, 2.5.
+function shortNum(n, d) { return String(Number(Number(n).toFixed(d))); }
 
 function fmt(n, d) { return Number(n).toFixed(d); }
 
