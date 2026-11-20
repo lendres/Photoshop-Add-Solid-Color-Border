@@ -7,6 +7,8 @@
  *   - Add, Edit, Delete, Move Up / Move Down
  *   - Widths can be entered in centimeters or inches; they are always saved in
  *     centimeters.
+ *   - Each preset is either "Uniform" (same border on all sides) or "Keep aspect
+ *     ratio" (saved with the keyword "aspect" after the width).
  *   - Nothing is written until you click Save.
  *
  * Comments in the file are kept: the comment block at the top stays at the top,
@@ -22,9 +24,13 @@ var DEFAULT_HEADER = [
     "# Border width presets for Add Border.jsx",
     "#",
     "# Keep this file in the same folder as Add Border.jsx.",
-    "# One preset per line:   Name = width",
+    "# One preset per line:   Name = width [uniform|aspect]",
     "#   - The width is the border on EACH side, in CENTIMETERS (use a period or a comma for decimals).",
     "#   - The dialog converts it to inches when the units are set to inches.",
+    "#   - uniform: the same border on all four sides (the default if neither word is given).",
+    "#   - aspect:  keep the photo's aspect ratio. The width is the smallest border; the border on",
+    "#              the short sides of the photo is widened so the bordered image has the same",
+    "#              aspect ratio as the photo.",
     "# Lines starting with # and blank lines are ignored. Presets appear in the order listed.",
     ""
 ];
@@ -71,12 +77,12 @@ function showEditor(f, data) {
     gMain.alignChildren = "top";
 
     var list = gMain.add("listbox", undefined, [], {
-        numberOfColumns: 3,
+        numberOfColumns: 4,
         showHeaders: true,
-        columnTitles: ["Name", "Centimeters", "Inches"],
-        columnWidths: [300, 90, 90]
+        columnTitles: ["Name", "Centimeters", "Inches", "Border shape"],
+        columnWidths: [280, 85, 70, 120]
     });
-    list.preferredSize = [500, 260];
+    list.preferredSize = [580, 260];
 
     var gSide = gMain.add("group");
     gSide.orientation = "column";
@@ -102,6 +108,7 @@ function showEditor(f, data) {
             var item = list.add("item", presets[i].name);
             item.subItems[0].text = shortNum(presets[i].cm, 4);
             item.subItems[1].text = shortNum(presets[i].cm / 2.54, 3);
+            item.subItems[2].text = presets[i].aspect ? "Keep aspect ratio" : "Uniform";
         }
         if (presets.length) {
             if (selectIndex === undefined || selectIndex === null) selectIndex = 0;
@@ -128,7 +135,7 @@ function showEditor(f, data) {
     btnAdd.onClick = function () {
         var p = presetDialog("Add Preset", null);
         if (!p) return;
-        var at = selectedIndex() + 1; // insert after the selection (or at the top)
+        var at = selectedIndex() + 1; // insert after the selection (or at the end)
         if (at <= 0) at = presets.length;
         p.before = [];
         presets.splice(at, 0, p);
@@ -143,6 +150,7 @@ function showEditor(f, data) {
         if (!p) return;
         presets[i].name = p.name;
         presets[i].cm = p.cm;
+        presets[i].aspect = p.aspect;
         dirty = true;
         refresh(i);
     };
@@ -182,7 +190,7 @@ function showEditor(f, data) {
     w.show();
 }
 
-// Add/Edit dialog. Returns { name, cm } or null if cancelled.
+// Add/Edit dialog. Returns { name, cm, aspect } or null if cancelled.
 function presetDialog(title, preset) {
     var d = new Window("dialog", title);
     d.orientation = "column";
@@ -201,9 +209,16 @@ function presetDialog(title, preset) {
     ddUnit.selection = (gEntryUnit === "in") ? 1 : 0;
     gWidth.add("statictext", undefined, "(border on each side)");
 
+    var gShape = d.add("group");
+    gShape.add("statictext", undefined, "Shape:").preferredSize.width = 45;
+    var ddShape = gShape.add("dropdownlist", undefined, ["Uniform", "Keep aspect ratio"]);
+    ddShape.selection = (preset && preset.aspect) ? 1 : 0;
+    ddShape.helpTip = "Keep aspect ratio: the width is the smallest border; the border on the " +
+                      "photo's short sides is widened so the bordered image keeps the photo's aspect ratio.";
+
     if (preset) {
         var inches = ddUnit.selection.index === 1;
-        etWidth.text = shortNum(inches ? preset.cm / 2.54 : preset.cm, inches ? 4 : 4);
+        etWidth.text = shortNum(inches ? preset.cm / 2.54 : preset.cm, 4);
     }
 
     // Convert the typed value when the units change.
@@ -240,7 +255,7 @@ function presetDialog(title, preset) {
         }
         var inches = ddUnit.selection.index === 1;
         gEntryUnit = inches ? "in" : "cm";
-        result = { name: name, cm: inches ? v * 2.54 : v };
+        result = { name: name, cm: inches ? v * 2.54 : v, aspect: ddShape.selection.index === 1 };
         d.close(1);
     };
     btnCancel.onClick = function () { d.close(2); };
@@ -284,14 +299,14 @@ function readPresets(f) {
 
         var eq = line.lastIndexOf("=");
         var name = eq > 0 ? line.substr(0, eq).replace(/\s+$/, "") : "";
-        var cm = eq > 0 ? parseNum(line.substr(eq + 1)) : NaN;
-        if (!name || !(cm > 0)) {
+        var value = eq > 0 ? parsePresetValue(line.substr(eq + 1)) : null;
+        if (!name || !value) {
             data.bad.push("Line " + lineNo + ": " + line);
             pending.push("# " + raw);
             continue;
         }
 
-        var p = { name: name, cm: cm, before: [] };
+        var p = { name: name, cm: value.cm, aspect: value.aspect, before: [] };
         if (data.presets.length === 0) data.header = pending;
         else p.before = pending;
         pending = [];
@@ -309,7 +324,7 @@ function buildLines(data) {
     for (var i = 0; i < data.presets.length; i++) {
         var p = data.presets[i];
         lines = lines.concat(p.before || []);
-        lines.push(p.name + " = " + shortNum(p.cm, 4));
+        lines.push(p.name + " = " + shortNum(p.cm, 4) + (p.aspect ? " aspect" : " uniform"));
     }
     return lines.concat(data.trailer);
 }
@@ -357,6 +372,16 @@ function parseNum(t) {
     t = String(t).replace(/^\s+|\s+$/g, "").replace(",", ".");
     if (!/^\d*\.?\d+$/.test(t) && !/^\d+\.$/.test(t)) return NaN;
     return parseFloat(t);
+}
+
+// The part of a preset line after "=": a width in cm, optionally followed by
+// "uniform" (the default) or "aspect". Returns { cm, aspect } or null.
+function parsePresetValue(text) {
+    var m = String(text).replace(/^\s+|\s+$/g, "").match(/^(\S+)(?:\s+(uniform|aspect))?$/i);
+    if (!m) return null;
+    var cm = parseNum(m[1]);
+    if (!(cm > 0)) return null;
+    return { cm: cm, aspect: !!m[2] && m[2].toLowerCase() === "aspect" };
 }
 
 // Number with up to d decimals and no trailing zeros, e.g. 1.969, 5, 2.5.

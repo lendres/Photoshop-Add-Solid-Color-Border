@@ -4,12 +4,15 @@
  *
  * Adds a solid black or white border AROUND the active photo:
  *   1. One dialog asks for units, final photo size (W x H), border width (typed in or
- *      chosen from presets in "Add Border Presets.txt"), and border
- *      color (black, white or a custom color).
+ *      chosen from presets in "Add Border Presets.txt"), border shape (uniform or
+ *      keep aspect ratio), and border color (black, white or a custom color).
  *   2. Reads the photo's current pixel size.
  *   3. Computes pixels-per-unit for width and height. If they disagree by more than
  *      MAX_RELATIVE_ERROR, asks whether to use width, height, or quit.
- *   4. Converts the border width to pixels.
+ *   4. Converts the border width to pixels. With "Keep aspect ratio", that width is
+ *      used on the photo's long sides (top/bottom of a landscape photo) and the border
+ *      on the short sides is widened so the bordered image has the same aspect ratio
+ *      as the photo. (For printers that crop uploads to the ordered aspect ratio.)
  *   5. Expands the canvas by the border on every side as blank, transparent canvas
  *      (no fill, Content-Aware or Generative Expand; photo pixels untouched).
  *   6. Saves the original photo area as a selection named "No Border Crop", so the
@@ -36,7 +39,8 @@ var BORDER_LAYER_NAME = "Border";
 var CROP_SELECTION_NAME = "No Border Crop";
 
 // Border width presets are read from this file, in the same folder as this script.
-// Each line is "Name = width in centimeters"; lines starting with # are comments.
+// Each line is "Name = width in centimeters [uniform|aspect]"; lines starting with #
+// are comments. "aspect" means keep the aspect ratio; without a keyword it's uniform.
 var PRESETS_FILE_NAME = "Add Border Presets.txt";
 
 // Used to pass values into suspendHistory (which evaluates in global scope).
@@ -93,11 +97,22 @@ function run(doc) {
     else rate = (rateW + rateH) / 2;
 
     // ---- 4. Border size in pixels ------------------------------------------
-    var borderPx = Math.round(s.border * rate);
+    var borderExact = s.border * rate;
+    var borderPx = Math.round(borderExact);
     if (borderPx < 1) {
         alert("A border of " + s.border + " " + s.unitShort +
               " works out to less than 1 pixel at this size. Nothing was changed.");
         return;
+    }
+
+    // Left/right border (borderX) and top/bottom border (borderY).
+    // Keep aspect ratio: the entered width is the smallest border; the border added
+    // along the longer dimension is scaled so (W + 2*bx) / (H + 2*by) = W / H.
+    var borderX = borderPx;
+    var borderY = borderPx;
+    if (s.keepAspect) {
+        if (wPx > hPx) borderX = Math.round(borderExact * wPx / hPx);
+        else if (hPx > wPx) borderY = Math.round(borderExact * hPx / wPx);
     }
 
     // ---- 5 & 6. Expand canvas, add top layer, fill the ring ----------------
@@ -105,7 +120,8 @@ function run(doc) {
         doc: doc,
         wPx: wPx,
         hPx: hPx,
-        borderPx: borderPx,
+        borderX: borderX,
+        borderY: borderY,
         color: s.color
     };
     doc.suspendHistory("Add Border", "applyBorder()");
@@ -115,9 +131,10 @@ function run(doc) {
 function applyBorder() {
     var j = gBorderJob;
     var doc = j.doc;
-    var b = j.borderPx;
-    var newW = j.wPx + 2 * b;
-    var newH = j.hPx + 2 * b;
+    var bx = j.borderX;
+    var by = j.borderY;
+    var newW = j.wPx + 2 * bx;
+    var newH = j.hPx + 2 * by;
 
     // A locked Background layer can't hold transparency, so Photoshop would fill
     // the added canvas on it with a color. Turn it into a normal layer first
@@ -131,7 +148,7 @@ function applyBorder() {
 
     // Save the original photo area as a named selection so the original crop
     // can be restored later: Select > Load Selection, then Image > Crop.
-    var inner = [[b, b], [b + j.wPx, b], [b + j.wPx, b + j.hPx], [b, b + j.hPx]];
+    var inner = [[bx, by], [bx + j.wPx, by], [bx + j.wPx, by + j.hPx], [bx, by + j.hPx]];
     doc.selection.select(inner, SelectionType.REPLACE, 0, false);
     saveSelectionAsChannel(CROP_SELECTION_NAME);
 
@@ -243,17 +260,40 @@ function showSettingsDialog() {
         for (var i = 0; i < presets.length; i++) {
             var v = inches ? presets[i].cm / 2.54 : presets[i].cm;
             ddPreset.add("item", presets[i].name + "  (" + shortNum(v, inches ? 3 : 2) +
-                         (inches ? " in)" : " cm)"));
+                         (inches ? " in" : " cm") +
+                         (presets[i].aspect ? ", keep aspect ratio)" : ", uniform)"));
         }
         ddPreset.selection = Math.min(keep, presets.length - 1);
+    }
+
+    // Border shape: uniform, or keep the photo's aspect ratio. A preset sets this
+    // itself, so the choice is disabled while Preset is selected.
+    var gS = pBorder.add("group");
+    gS.add("statictext", undefined, "Border shape:");
+    var rbUniform = gS.add("radiobutton", undefined, "Uniform");
+    var rbAspect = gS.add("radiobutton", undefined, "Keep aspect ratio");
+    rbUniform.value = true;
+    rbUniform.helpTip = "The same border width on all four sides.";
+    rbAspect.helpTip = "The border width is used on the long sides of the photo; the border on the " +
+                       "short sides is widened so the bordered image keeps the photo's aspect ratio.";
+
+    function applyPresetShape() {
+        if (!rbWidthPreset.value || !presets.length || !ddPreset.selection) return;
+        var aspect = presets[ddPreset.selection.index].aspect;
+        rbAspect.value = aspect;
+        rbUniform.value = !aspect;
     }
 
     function updateWidthEnabled() {
         etB.enabled = rbWidthCustom.value;
         ddPreset.enabled = rbWidthPreset.value;
+        rbUniform.enabled = rbWidthCustom.value;
+        rbAspect.enabled = rbWidthCustom.value;
+        applyPresetShape();
     }
     rbWidthCustom.onClick = function () { rbWidthPreset.value = false; updateWidthEnabled(); };
     rbWidthPreset.onClick = function () { rbWidthCustom.value = false; updateWidthEnabled(); };
+    ddPreset.onChange = applyPresetShape;
 
     rbWidthCustom.value = true;
     if (!presets.length) {
@@ -374,6 +414,7 @@ function showSettingsDialog() {
             border: b,
             inches: inches,
             unitShort: inches ? "in" : "cm",
+            keepAspect: rbAspect.value,
             color: c,
             colorName: colorName
         };
@@ -505,15 +546,25 @@ function loadBorderPresets() {
 
         var eq = line.lastIndexOf("=");
         var name = eq > 0 ? line.substr(0, eq).replace(/\s+$/, "") : "";
-        var cm = eq > 0 ? parseNum(line.substr(eq + 1)) : NaN;
-        if (!name || !(cm > 0)) {
+        var value = eq > 0 ? parsePresetValue(line.substr(eq + 1)) : null;
+        if (!name || !value) {
             info.errors.push("Line " + lineNo + ": " + line);
             continue;
         }
-        info.presets.push({ name: name, cm: cm });
+        info.presets.push({ name: name, cm: value.cm, aspect: value.aspect });
     }
     f.close();
     return info;
+}
+
+// The part of a preset line after "=": a width in cm, optionally followed by
+// "uniform" (the default) or "aspect". Returns { cm, aspect } or null.
+function parsePresetValue(text) {
+    var m = String(text).replace(/^\s+|\s+$/g, "").match(/^(\S+)(?:\s+(uniform|aspect))?$/i);
+    if (!m) return null;
+    var cm = parseNum(m[1]);
+    if (!(cm > 0)) return null;
+    return { cm: cm, aspect: !!m[2] && m[2].toLowerCase() === "aspect" };
 }
 
 // Number with up to d decimals and no trailing zeros, e.g. 1.969, 5, 2.5.
