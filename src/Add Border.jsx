@@ -3,7 +3,8 @@
  * Add Border.jsx
  *
  * Adds a solid black or white border AROUND the active photo:
- *   1. One dialog asks for units, final photo size (W x H), border width, border color.
+ *   1. One dialog asks for units, final photo size (W x H), border width, and border
+ *      color (black, white or a custom color).
  *   2. Reads the photo's current pixel size.
  *   3. Computes pixels-per-unit for width and height. If they disagree by more than
  *      MAX_RELATIVE_ERROR, asks whether to use width, height, or quit.
@@ -212,7 +213,39 @@ function showSettingsDialog() {
     gC.add("statictext", undefined, "Color:");
     var rbBlack = gC.add("radiobutton", undefined, "Black");
     var rbWhite = gC.add("radiobutton", undefined, "White");
+    var rbCustom = gC.add("radiobutton", undefined, "Custom:");
     rbBlack.value = true;
+
+    // Custom color: a hex field, a swatch, and a button that opens Photoshop's
+    // Color Picker. It starts out as the current foreground color.
+    var gCustom = pBorder.add("group");
+    gCustom.margins = [52, 0, 0, 0];
+    var swatch = gCustom.add("group");
+    swatch.preferredSize = [36, 20];
+    var etHex = gCustom.add("edittext", undefined, colorToHex(app.foregroundColor));
+    etHex.characters = 8;
+    var btnPick = gCustom.add("button", undefined, "Choose...");
+
+    function updateSwatch() {
+        var rgb = hexToRgb(etHex.text);
+        if (!rgb) return;
+        try {
+            swatch.graphics.backgroundColor = swatch.graphics.newBrush(
+                swatch.graphics.BrushType.SOLID_COLOR,
+                [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1]);
+        } catch (e) { /* swatch is cosmetic only */ }
+    }
+    updateSwatch();
+
+    etHex.onChanging = function () { rbCustom.value = true; updateSwatch(); };
+    btnPick.onClick = function () {
+        rbCustom.value = true;
+        var picked = pickColor(hexToRgb(etHex.text));
+        if (picked) {
+            etHex.text = colorToHex(picked);
+            updateSwatch();
+        }
+    };
 
     ddUnits.onChange = function () {
         unitLabel.text = (ddUnits.selection.index === 0) ? "in" : "cm";
@@ -237,9 +270,25 @@ function showSettingsDialog() {
             return;
         }
         var inches = ddUnits.selection.index === 0;
-        var black = rbBlack.value;
+        var rgb, colorName;
+        if (rbCustom.value) {
+            rgb = hexToRgb(etHex.text);
+            if (!rgb) {
+                alert("Enter the custom color as a hex value such as #1A2B3C, or click Choose.");
+                return;
+            }
+            colorName = colorToHexFromRgb(rgb);
+        } else if (rbWhite.value) {
+            rgb = [255, 255, 255];
+            colorName = "white";
+        } else {
+            rgb = [0, 0, 0];
+            colorName = "black";
+        }
         var c = new SolidColor();
-        c.rgb.red = c.rgb.green = c.rgb.blue = black ? 0 : 255;
+        c.rgb.red = rgb[0];
+        c.rgb.green = rgb[1];
+        c.rgb.blue = rgb[2];
         result = {
             width: w,
             height: h,
@@ -247,7 +296,7 @@ function showSettingsDialog() {
             inches: inches,
             unitShort: inches ? "in" : "cm",
             color: c,
-            colorName: black ? "black" : "white"
+            colorName: colorName
         };
         d.close(1);
     };
@@ -304,6 +353,49 @@ function parseNum(t) {
     t = String(t).replace(/^\s+|\s+$/g, "").replace(",", ".");
     if (!/^\d*\.?\d+$/.test(t) && !/^\d+\.$/.test(t)) return NaN;
     return parseFloat(t);
+}
+
+// Opens Photoshop's Color Picker starting at the given [r, g, b] (or the current
+// foreground color). Returns the chosen SolidColor, or null if cancelled.
+// The foreground color is put back afterwards.
+function pickColor(startRgb) {
+    var savedForeground = app.foregroundColor;
+    try {
+        if (startRgb) {
+            var start = new SolidColor();
+            start.rgb.red = startRgb[0];
+            start.rgb.green = startRgb[1];
+            start.rgb.blue = startRgb[2];
+            app.foregroundColor = start;
+        }
+        if (!app.showColorPicker()) return null;
+        return app.foregroundColor;
+    } finally {
+        app.foregroundColor = savedForeground;
+    }
+}
+
+// "#1A2B3C", "1a2b3c" or "#abc" -> [26, 43, 60]; null if not valid.
+function hexToRgb(text) {
+    var t = String(text).replace(/^\s+|\s+$/g, "").replace(/^#/, "");
+    if (/^[0-9a-fA-F]{3}$/.test(t)) {
+        t = t.charAt(0) + t.charAt(0) + t.charAt(1) + t.charAt(1) + t.charAt(2) + t.charAt(2);
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(t)) return null;
+    return [parseInt(t.substr(0, 2), 16), parseInt(t.substr(2, 2), 16), parseInt(t.substr(4, 2), 16)];
+}
+
+function colorToHex(solidColor) {
+    return colorToHexFromRgb([solidColor.rgb.red, solidColor.rgb.green, solidColor.rgb.blue]);
+}
+
+function colorToHexFromRgb(rgb) {
+    var out = "#";
+    for (var i = 0; i < 3; i++) {
+        var h = Math.round(rgb[i]).toString(16).toUpperCase();
+        out += (h.length < 2 ? "0" : "") + h;
+    }
+    return out;
 }
 
 function fmt(n, d) { return Number(n).toFixed(d); }
