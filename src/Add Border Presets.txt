@@ -16,5 +16,6 @@
 # They keep the aspect ratio because WhiteWall crops uploads to the ordered aspect ratio.
 
 WhiteWall Canvas, 2 cm (0.79 in) frame = 2.9 aspect
-WhiteWall Canvas, 4 cm (1.57 in) frame = 5.0 aspect
+WhiteWall Canvas, 4 cm (1.57 in) frame = 5 aspect
 WhiteWall Canvas, 6 cm (2.36 in) frame = 8.5 aspect
+NoAsp WhiteWall Canvas, 4 cm (1.57 in) frame = 5 uniform
